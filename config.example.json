@@ -1,0 +1,8 @@
+{
+  "listen": "127.0.0.1:8443",
+  "upstream": "wss://uniproxy.alice.yandex.net/uni.ws",
+  "hermes_base_url": "https://hermes.example/v1",
+  "model": "hermes-agent",
+  "session_id": "replace-with-a-stable-session-id",
+  "api_key_file": "/data/opt/station-hermes/hermes-api-key"
+}

@@ -1,0 +1,30 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+      - name: Check formatting
+        run: test -z "$(gofmt -l $(find . -name '*.go' -not -path './vendor/*'))"
+      - name: Test
+        run: go test ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Build static station binary
+        run: ./scripts/build-arm64.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: station-hermes-linux-arm64
+          path: dist/station-hermes-arm64.gz

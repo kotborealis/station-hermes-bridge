@@ -1,0 +1,22 @@
+#!/bin/sh
+# Minimal BusyBox init hook. Install only after config and key are in place.
+APP=/data/opt/station-hermes
+BIN=$APP/station-hermes
+CFG=$APP/config.json
+LOG=$APP/service.log
+
+start() {
+    [ -x "$BIN" ] || { echo "station-hermes: missing executable $BIN" >> "$LOG"; return 1; }
+    [ -r "$CFG" ] || { echo "station-hermes: missing config $CFG" >> "$LOG"; return 1; }
+    [ -r "$APP/hermes-api-key" ] || { echo "station-hermes: missing API key file" >> "$LOG"; return 1; }
+    pidof station-hermes >/dev/null 2>&1 && return 0
+    "$BIN" -config "$CFG" >> "$LOG" 2>&1 &
+}
+
+case "$1" in
+    start) start ;;
+    stop) killall station-hermes 2>/dev/null || true ;;
+    restart) killall station-hermes 2>/dev/null || true; sleep 1; start ;;
+    *) echo "usage: $0 {start|stop|restart}" >&2; exit 2 ;;
+esac
+exit 0
