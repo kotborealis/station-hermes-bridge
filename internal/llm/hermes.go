@@ -58,9 +58,9 @@ type hermesControl struct {
 	Description         string `json:"description"`
 }
 
-// CompleteDialogueStream preserves Runs API status as the source of truth while
+// CompleteVoiceTurn preserves Runs API status as the source of truth while
 // forwarding complete assistant sentences from the resumable events stream.
-func (c *HermesClient) CompleteDialogueStream(ctx context.Context, messages []Message, onSentence func(string)) (string, error) {
+func (c *HermesClient) CompleteVoiceTurn(ctx context.Context, messages []Message, onSentence func(string)) (string, error) {
 	if c.Model == "" {
 		return "", errors.New("Hermes model is not configured")
 	}

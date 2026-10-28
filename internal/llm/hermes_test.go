@@ -60,7 +60,7 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-func TestCompleteDialogueStreamUsesConfiguredHermesRun(t *testing.T) {
+func TestCompleteVoiceTurnUsesConfiguredHermesRun(t *testing.T) {
 	t.Parallel()
 	client := &HermesClient{
 		Model: "hermes-agent", BaseURL: "https://hermes.test/v1", APIKey: "test-key", SessionID: "station-session",
@@ -94,9 +94,9 @@ func TestCompleteDialogueStreamUsesConfiguredHermesRun(t *testing.T) {
 		})},
 	}
 	sentences := make(chan string, 2)
-	answer, err := client.CompleteDialogueStream(t.Context(), []Message{{Role: "system", Content: "Отвечай кратко."}, {Role: "user", Content: "Сколько будет два плюс два?"}}, func(sentence string) { sentences <- sentence })
+	answer, err := client.CompleteVoiceTurn(t.Context(), []Message{{Role: "system", Content: "Отвечай кратко."}, {Role: "user", Content: "Сколько будет два плюс два?"}}, func(sentence string) { sentences <- sentence })
 	if err != nil {
-		t.Fatalf("CompleteDialogueStream() error = %v", err)
+		t.Fatalf("CompleteVoiceTurn() error = %v", err)
 	}
 	if answer != "Четыре." {
 		t.Fatalf("answer = %q, want Hermes final output", answer)

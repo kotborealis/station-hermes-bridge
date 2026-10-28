@@ -31,7 +31,7 @@ func loadConfig(path string) (config, error) {
 		return cfg, fmt.Errorf("parse config: %w", err)
 	}
 	if cfg.Listen == "" || cfg.Upstream == "" || cfg.HermesURL == "" || cfg.Model == "" || cfg.SessionID == "" || cfg.APIKeyFile == "" || strings.TrimSpace(cfg.VoicePrompt) == "" {
-		return cfg, errors.New("listen, upstream, hermes_base_url, model, session_id, api_key_file and voice_prompt are required")
+		return cfg, errors.New("hermes_base_url, model, session_id, api_key_file and voice_prompt are required")
 	}
 	host, _, err := net.SplitHostPort(cfg.Listen)
 	ip, parseErr := netip.ParseAddr(host)

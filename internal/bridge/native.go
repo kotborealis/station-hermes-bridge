@@ -31,9 +31,6 @@ type Resolution struct {
 	Answer string
 }
 type Resolver interface {
-	Resolve(context.Context, string) (Resolution, error)
-}
-type StreamResolver interface {
 	ResolveStream(context.Context, string, func(string)) (Resolution, error)
 }
 
@@ -488,11 +485,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			if n.ProgressAfter > 0 {
 				stop = n.progress(p)
 			}
-			if streaming, ok := n.resolver.(StreamResolver); ok {
-				result, err = streaming.ResolveStream(p.ctx, text, func(sentence string) { n.streamSentence(p, sentence) })
-			} else {
-				result, err = n.resolver.Resolve(p.ctx, text)
-			}
+			result, err = n.resolver.ResolveStream(p.ctx, text, func(sentence string) { n.streamSentence(p, sentence) })
 			stop()
 		}
 
