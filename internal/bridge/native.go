@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -23,24 +24,17 @@ import (
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
 
-	"stationhermes/internal/dialogue"
-	"stationhermes/internal/sound"
 	"stationhermes/internal/wire"
 )
 
 type Resolution struct {
-	Route  string
 	Answer string
 }
 type Resolver interface {
 	Resolve(context.Context, string) (Resolution, error)
 }
-type RoutedResolver interface {
-	Decide(context.Context, string) RouteDecision
-	ResolveDecision(context.Context, string, RouteDecision) (Resolution, error)
-}
-type FallbackResolver interface {
-	Fallback(context.Context, string) (Resolution, error)
+type StreamResolver interface {
+	ResolveStream(context.Context, string, func(string)) (Resolution, error)
 }
 
 type nativeRequest struct {
@@ -57,7 +51,6 @@ type nativeRequest struct {
 	id                              string
 	request                         *request.TAliceRequestProto
 	text                            string
-	route                           string
 	ctx                             context.Context
 	cancel                          context.CancelFunc
 	started, canceled, local, cloud bool
@@ -74,34 +67,28 @@ type nativeRequest struct {
 	streamedText                    string
 	intermediateTTS                 map[string]chan struct{}
 	streamDisabled                  bool
-	soundRequest                    *sound.Request
-	soundDirective                  *soundDirective
-	soundSealed                     bool
 	expires                         *time.Timer
 }
 type Native struct {
-	connectionScope  string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	up, down         Sender
-	resolver         Resolver
-	mu               sync.Mutex
-	requests         map[string]*nativeRequest
-	tts              map[string]*nativeRequest
-	streams          map[uint32]*nativeRequest
-	blocked          map[uint32]*nativeRequest
-	wg               sync.WaitGroup
-	OnRoute          func(id, route string)
-	GateText         bool
-	ShouldListen     bool
-	DecisionDelay    time.Duration
-	ProgressAfter    time.Duration
-	ProgressInterval time.Duration
+	ctx           context.Context
+	cancel        context.CancelFunc
+	up, down      Sender
+	resolver      Resolver
+	mu            sync.Mutex
+	requests      map[string]*nativeRequest
+	tts           map[string]*nativeRequest
+	streams       map[uint32]*nativeRequest
+	blocked       map[uint32]*nativeRequest
+	wg            sync.WaitGroup
+	GateText      bool
+	DecisionDelay time.Duration
+	ShouldListen  bool
+	ProgressAfter time.Duration
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{connectionScope: newID(), ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
+	return &Native{ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -152,20 +139,8 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		if id == "" {
 			return n.up(ctx, k, data)
 		}
-		scope := "connection:" + n.connectionScope
-		if id := req.GetApplication().GetDeviceId(); id != "" {
-			scope = "device:" + id
-		} else if id := req.GetApplication().GetUuid(); id != "" {
-			scope = "uuid:" + id
-		}
-		pctx, cancel := context.WithTimeout(dialogue.WithSpeaker(n.ctx, scope), 90*time.Second)
-		playerState := nativePlaybackState(req)
-		pctx = sound.WithPlaybackState(pctx, playerState)
-		slog.Info("native_player_state", "request", requestTag(id), "present", playerState.Present, "player_state", playerState.PlayerState, "offset_known", playerState.OffsetKnown, "offset_ms", playerState.OffsetMS, "has_stream", playerState.StreamID != "", "stream_tag", requestTag(playerState.StreamID))
+		pctx, cancel := context.WithTimeout(n.ctx, 90*time.Second)
 		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
-		p.ctx = sound.WithPlayer(p.ctx, func(ctx context.Context, request sound.Request) error {
-			return n.queueSound(ctx, p, request)
-		})
 		p.header = proto.Clone(e.GetHeader()).(*header.TEventHeader)
 		p.isText = f.Kind() == "TextInput"
 		p.input = append([]byte{}, data...)
@@ -182,11 +157,6 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 			n.mu.Unlock()
 			cancel()
 			return errors.New("too many pending native requests")
-		}
-		if preparer, ok := n.resolver.(interface {
-			Prepare(context.Context) context.Context
-		}); ok {
-			p.ctx = preparer.Prepare(p.ctx)
 		}
 		p.expires = time.AfterFunc(90*time.Second, func() {
 			n.mu.Lock()
@@ -218,7 +188,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 				return err
 			}
 		}
-		// The original input stays local until routing has selected exactly one executor.
+		// The original input stays local until Hermes has produced its answer.
 		n.maybeResolve(p)
 		return nil
 	}
@@ -456,46 +426,7 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 		n.mu.Unlock()
 		return nil
 	}
-	if r := e.GetAliceResponse(); r != nil && p.cloud && !p.ttsStarted && canReplaceResponse(r) {
-		text := ""
-		for _, card := range r.GetResponse().GetCards() {
-			text += card.GetText() + " "
-		}
-		if strings.TrimSpace(text) == "" {
-			text = r.GetVoiceResponse().GetOutputSpeech().GetText()
-		}
 
-		if resolver, ok := n.resolver.(FallbackResolver); ok && n.isRefusal(text) {
-			p.local = true
-			if n.OnRoute != nil {
-				n.OnRoute(p.id, "llm")
-			}
-			p.ttsID = newID()
-			n.tts[p.ttsID] = p
-			query := p.text
-			n.mu.Unlock()
-			n.wg.Go(func() {
-				result, err := resolver.Fallback(p.ctx, query)
-				if p.ctx.Err() != nil {
-					return
-				}
-				if errors.Is(err, context.Canceled) {
-					n.discardStale(p)
-					return
-				}
-				if err != nil {
-					n.discardSound(p)
-					result.Answer = "Сейчас не получилось получить ответ локальной модели."
-				}
-				_ = n.sendCancel(p.ctx, p.id)
-				if err := n.reply(p, result.Answer); err != nil {
-					slog.Warn("native_reply_failed", "request", requestTag(p.id))
-				}
-				slog.Info("native_fallback", "request", requestTag(p.id), "route", "llm")
-			})
-			return nil
-		}
-	}
 	switch f.Kind() {
 	case "AliceResponse":
 		if !p.cloud {
@@ -529,7 +460,6 @@ func (n *Native) Server(ctx context.Context, k websocket.MessageType, data []byt
 	if err := n.down(ctx, k, data); err != nil {
 		return err
 	}
-	n.captureCloud(p, e)
 	return nil
 }
 func (n *Native) maybeResolve(p *nativeRequest) {
@@ -549,31 +479,23 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
-		result := Resolution{Route: "yandex"}
+		result := Resolution{}
+		useHermes := n.resolver != nil && strings.TrimSpace(text) != ""
 		var err error
-		if n.resolver != nil && strings.TrimSpace(text) != "" {
-			if routed, ok := n.resolver.(RoutedResolver); ok {
-				decision := routed.Decide(p.ctx, text)
-				n.mu.Lock()
-				// The speaker latches post-speech listening from the initial
-				// streaming envelope. Mark conversational routes up front; media
-				// and playback routes keep the microphone closed.
-				p.listenOnStreamStart = decision.Route == "llm" || decision.Route == "home"
-				n.mu.Unlock()
-				slog.Info("native_route_decision", "request", requestTag(p.id), "route", decision.Route, "source", decision.Source)
-				stop := func() {}
-				if decision.Route != "yandex" && n.ProgressAfter > 0 {
-					stop = n.progress(p)
-				}
-				resolveCtx := withSentenceStream(p.ctx, func(sentence string) {
-					n.streamSentence(p, sentence)
-				})
-				result, err = routed.ResolveDecision(resolveCtx, text, decision)
-				stop()
+		if useHermes {
+			p.listenOnStreamStart = true
+			stop := func() {}
+			if n.ProgressAfter > 0 {
+				stop = n.progress(p)
+			}
+			if streaming, ok := n.resolver.(StreamResolver); ok {
+				result, err = streaming.ResolveStream(p.ctx, text, func(sentence string) { n.streamSentence(p, sentence) })
 			} else {
 				result, err = n.resolver.Resolve(p.ctx, text)
 			}
+			stop()
 		}
+
 		if p.ctx.Err() != nil {
 			return
 		}
@@ -582,27 +504,15 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			return
 		}
 		if err != nil {
-			slog.Warn("native_resolution_failed", "request", requestTag(p.id), "route", result.Route, "error", err)
-			n.discardSound(p)
-			if result.Route == "home" {
-				result.Answer = "Не удалось подтвердить выполнение команды в умном доме."
-			} else if result.Route == "music" {
-				result.Answer = "Не удалось включить музыку с этой страницы."
-			} else {
-				result.Route = "llm"
-				result.Answer = "Сейчас не получилось получить ответ локальной модели."
-			}
+			slog.Warn("native_hermes_request_failed", "request", requestTag(p.id), "error", err)
+			result.Answer = "Сейчас не получилось получить ответ Hermes."
 		}
 		n.mu.Lock()
 		if p.canceled {
 			n.mu.Unlock()
 			return
 		}
-		if n.OnRoute != nil {
-			n.OnRoute(p.id, result.Route)
-		}
-		p.route = result.Route
-		if result.Route == "yandex" {
+		if !useHermes {
 			p.cloud = true
 			var err error
 			if p.gated {
@@ -629,7 +539,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.tts[p.ttsID] = p
 		}
 		n.mu.Unlock()
-		slog.Info("native_route", "request", requestTag(p.id), "route", result.Route)
+		slog.Info("native_route", "request", requestTag(p.id), "route", "hermes")
 		if p.gated && !p.streaming {
 			if err := n.sendCancel(p.ctx, p.id); err != nil {
 				return
@@ -657,13 +567,7 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 		requestID = p.id
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
-	silentPlayback := n.hasSilentPlayback(p)
-	answer.VoiceResponse.ShouldListen = n.ShouldListen && !silentPlayback
-	if silentPlayback {
-		answer.VoiceResponse.HasVoiceResponse = false
-		answer.VoiceResponse.OutputSpeech.Text = new("")
-	}
-	answer.Response.Directives = n.takeSound(p)
+	answer.VoiceResponse.ShouldListen = n.ShouldListen
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
@@ -676,10 +580,6 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 	}
 	if err := n.down(p.ctx, websocket.MessageBinary, b); err != nil {
 		return err
-	}
-	n.captureDelivered(p, text, true, silentPlayback || len(answer.Response.Directives) > 0, true)
-	if silentPlayback {
-		return nil
 	}
 	return n.synthesize(p, text)
 }
@@ -756,7 +656,11 @@ func requestTag(id string) string {
 
 // Quasar uses Yandex TGUID spelling (8-8-8-8), not RFC UUID spelling.
 func newID() string {
-	return sound.NewStreamID()
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		panic("cannot create protocol message ID")
+	}
+	return fmt.Sprintf("%x-%x-%x-%x", id[0:4], id[4:8], id[8:12], id[12:16])
 }
 
 func (n *Native) makeContinue(p *nativeRequest) ([]byte, error) {
@@ -784,13 +688,6 @@ func canReplaceResponse(r *response.TAliceResponseProto) bool {
 		}
 	}
 	return true
-}
-
-func (n *Native) isRefusal(text string) bool {
-	if detector, ok := n.resolver.(interface{ IsRefusal(string) bool }); ok {
-		return detector.IsRefusal(text)
-	}
-	return IsRefusal(text)
 }
 
 func (n *Native) discardStale(p *nativeRequest) {

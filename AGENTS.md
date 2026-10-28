@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-This repository contains a small Go service that proxies a rooted Yandex Station Mini 2's UniWS protocol to Hermes Agent. The station retains wake-word detection, speech recognition, and speech synthesis. Recognized text goes to Hermes Runs; assistant sentence deltas may be synthesized before the final run status arrives.
+This repository contains a small Go service that proxies a rooted Yandex Station's UniWS protocol to Hermes Agent. The station retains wake-word detection, speech recognition, and speech synthesis. Recognized text goes to Hermes Runs; assistant sentence deltas may be synthesized before the final run status arrives.
 
 ## Before changing code
 
@@ -23,13 +23,13 @@ go vet ./...
 ./scripts/build-arm64.sh
 ```
 
-Add focused tests for protocol parsing, routing, or state changes. Avoid tests that require a live station, real API credentials, or network listeners; use injected transports and protocol fakes.
+Add focused tests for configuration parsing, Hermes Runs, and protocol state changes. Avoid tests that require a live station, real API credentials, or network listeners; use injected transports and protocol fakes.
 
 ## Deployment
 
 - Follow `docs/DEPLOYMENT.md`. Do not assume rootfs is writable; use the device-specific Hackalice procedure and remount it read-only after rootfs edits.
 - Check `/data` space before transfer and stage the complete binary before swapping it into place.
-- Keep a dated previous binary until health, Hermes API, and Runs/SSE checks pass. Preserve a rollback path for the Quasar endpoint and init hook.
+- Keep a dated previous binary until health checks and an actual voice turn through Hermes pass. Preserve a rollback path for the Quasar endpoint and init hook.
 - Keep the API key in the configured root-only file. Never pass it in shell arguments, print it, or copy it into repository configuration.
 - Do not change Hermes approval policy or enable unattended approvals. Voice approvals are single-run decisions handled by the bridge.
 

@@ -20,10 +20,9 @@ import (
 	"time"
 )
 
-// HermesClient uses the OpenAI-compatible API for internal bridge requests and
-// Hermes' Runs API for voice turns, where durable sessions and approvals live.
+// HermesClient talks to Hermes Runs, which owns the persistent conversation.
 type HermesClient struct {
-	API       *Client
+	Model     string
 	BaseURL   string
 	APIKey    string
 	SessionID string
@@ -59,28 +58,13 @@ type hermesControl struct {
 	Description         string `json:"description"`
 }
 
-func (c *HermesClient) Complete(ctx context.Context, messages []Message, structured bool) (string, error) {
-	if c.API == nil {
-		return "", errors.New("Hermes API client is not configured")
-	}
-	if structured || !isVoiceConversation(messages) {
-		return c.API.Complete(ctx, messages, structured)
-	}
-	return c.completeVoice(ctx, messages, nil)
-}
-
 // CompleteDialogueStream preserves Runs API status as the source of truth while
 // forwarding complete assistant sentences from the resumable events stream.
-func (c *HermesClient) CompleteDialogueStream(ctx context.Context, messages []Message, private bool, onSentence func(string)) (string, bool, error) {
-	if c.API == nil {
-		return "", false, errors.New("Hermes API client is not configured")
+func (c *HermesClient) CompleteDialogueStream(ctx context.Context, messages []Message, onSentence func(string)) (string, error) {
+	if c.Model == "" {
+		return "", errors.New("Hermes model is not configured")
 	}
-	if !isVoiceConversation(messages) {
-		answer, err := c.API.Complete(ctx, messages, false)
-		return answer, private, err
-	}
-	answer, err := c.completeVoice(ctx, messages, onSentence)
-	return answer, private, err
+	return c.completeVoice(ctx, messages, onSentence)
 }
 
 func (c *HermesClient) completeVoice(ctx context.Context, messages []Message, onSentence func(string)) (string, error) {
@@ -104,7 +88,7 @@ func (c *HermesClient) completeVoice(ctx context.Context, messages []Message, on
 	}
 	body := map[string]any{
 		"input": userText, "session_id": c.SessionID,
-		"instructions": instructions, "model": c.API.Model,
+		"instructions": instructions, "model": c.Model,
 	}
 	if err := c.request(ctx, http.MethodPost, "/runs", body, &created, "Idempotency-Key", key); err != nil {
 		return "", err
@@ -279,10 +263,6 @@ func completeSentences(pending *string, delta string) []string {
 		*pending = (*pending)[start:]
 	}
 	return out
-}
-
-func isVoiceConversation(messages []Message) bool {
-	return len(messages) > 0 && messages[0].Role == "system" && strings.HasPrefix(messages[0].Content, "Ты голосовой помощник пользователя.")
 }
 
 func lastUserAndInstructions(messages []Message) (string, string) {

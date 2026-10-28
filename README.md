@@ -1,13 +1,11 @@
 # Station Hermes Bridge
 
-Small on-device bridge for a rooted Yandex Station Mini 2. The station keeps its normal Yandex speech recognition and speech playback. This service proxies the station's UniWS connection and sends recognized assistant requests to a persistent Hermes Agent session through the OpenAI-compatible API and Hermes Runs API.
-
-The project does not need a Mac, OpenCode, Entware, or a second always-on host once installed. The Hermes API server must remain reachable over HTTPS from the station.
+Small on-device bridge for rooted Yandex Stations. The station keeps its normal Yandex speech recognition and speech playback. This service proxies the station's UniWS connection and sends recognized assistant requests to a persistent Hermes Agent session through Hermes Runs and its sentence event stream.
 
 ## Target and constraints
 
-- Target: Yandex Station Mini 2 (Amlogic AXG, Cortex-A53, Linux `aarch64`).
-- Build: static `linux/arm64`, `CGO_ENABLED=0`; this avoids depending on the station's 32-bit Buildroot userspace libraries.
+- Target: rooted Yandex Stations with a compatible UniWS endpoint and a Linux ARM64 userspace. Per-model root procedures and firmware details vary; live deployment has been verified on Mini 2.
+- Build: static `linux/arm64`, `CGO_ENABLED=0`; this matches the verified Mini 2 firmware; check the target model's userspace and UniWS protocol before deployment.
 - Install path: `/data/opt/station-hermes`.
 - Runtime: one Go process, no external packages on the station.
 - Current build: about 12.4 MiB; gzip transfer artifact about 4.2 MiB. The installer stages an uncompressed copy and requires at least 14 MiB free on `/data`.
@@ -27,9 +25,9 @@ The output is `dist/station-hermes-arm64` and `dist/station-hermes-arm64.gz`. Th
 
 ## Configuration
 
-Copy `config.example.json` to `/data/opt/station-hermes/config.json`, then set a stable Hermes session ID and key file path. Store the API token separately in `/data/opt/station-hermes/hermes-api-key` with permissions `0600`. The binary contains no token; the service reads it from this root-only file at startup, and the secret must not be committed to the repository.
+Copy `config.example.json` to `/data/opt/station-hermes/config.json`, then set the Hermes endpoint, model, stable session ID, prompt, and key file path. Store the API token separately in `/data/opt/station-hermes/hermes-api-key` with permissions `0600`. The binary contains no token; the service reads it from this root-only file at startup, and the secret must not be committed to the repository.
 
-The example uses `https://hermes.example/v1` and model `hermes-agent`; replace the URL with your reachable Hermes API endpoint. The default UniWS upstream is `wss://uniproxy.alice.yandex.net/uni.ws`. The service binds only to `127.0.0.1:8443`, so its HTTP health endpoint and WebSocket listener are not exposed to the LAN.
+The example uses placeholder URL `https://hermes.example/v1` and model `hermes-agent`; set `hermes_base_url` to your reachable OpenAI-compatible Hermes API endpoint. Configuration keys: `listen` is the loopback bind address; `upstream` is the Yandex UniWS URL; `hermes_base_url` is the HTTPS Hermes API base; `model` selects the Hermes model; `session_id` identifies the one persistent conversation; `api_key_file` points to the root-only token file; `voice_prompt` supplies the system instructions for spoken turns. The default UniWS upstream is `wss://uniproxy.alice.yandex.net/uni.ws`. The service binds only to `127.0.0.1:8443`, so its HTTP health endpoint and WebSocket listener are not exposed to the LAN.
 
 Before installation, verify that the station can resolve the Hermes hostname and establish trusted HTTPS. Hackalice notes that the station's BusyBox `wget` does not support HTTPS on this firmware; this project's Go runtime uses the system CA bundle. Run `station-hermes -check-hermes-tls https://your-hermes-host/v1` on the station before changing the Quasar endpoint. This checks trusted HTTPS without sending the API token. A successful DNS lookup or HTTP redirect alone does not prove TLS works.
 
@@ -45,7 +43,7 @@ Do not apply the endpoint change until the service's HTTPS connectivity to Herme
 
 Run `go test ./...`, `go vet ./...`, and `./scripts/build-arm64.sh` on the development host. CI runs the same checks and publishes the compressed ARM64 build as a workflow artifact.
 
-On the station, `station-hermes -check-hermes-tls URL` checks HTTPS trust without credentials, `-check-hermes-api` makes a harmless one-word API request, and `-check-hermes-stream` checks Runs plus sentence SSE in a separate diagnostic session. `/healthz` checks only that the local listener is alive. None of these checks requires speaking to the station.
+On the station, `station-hermes -check-hermes-tls URL` checks HTTPS trust without credentials. `/healthz` checks only that the local listener is alive. Verify the Hermes Runs flow with an actual voice turn; no API smoke-check command is included because it would create requests outside the persistent voice flow.
 
 ## API behavior and approvals
 
@@ -57,7 +55,7 @@ Voice responses use a short-answer instruction. If Hermes has not completed a re
 
 ## Scope
 
-Intentionally omitted: OpenCode, MCP servers, Home Assistant, music queue, web reader, Mac runtime dependency, UI, local databases, and broad routing configuration. All recognized assistant requests go to Hermes; Yandex remains the station's ASR/TTS and low-level protocol service.
+All recognized assistant requests go directly to Hermes. The station continues to provide wake-word detection, ASR, TTS and the low-level UniWS protocol.
 
 ## License
 
