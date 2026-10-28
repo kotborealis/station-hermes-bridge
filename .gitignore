@@ -1,0 +1,11 @@
+/dist/
+/private/
+/config.json
+/*.env
+*.log
+*.key
+*.pem
+hermes-api-key
+endpoint-backup.json
+*.bak
+.DS_Store
