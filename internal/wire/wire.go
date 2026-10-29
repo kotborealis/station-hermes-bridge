@@ -1,7 +1,6 @@
 package wire
 
 import (
-	speechkit "github.com/freequasar/quasar-go-genproto/proto/alice/cuttlefish/library/speechkit_proto"
 	client "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/client"
 	server "github.com/freequasar/quasar-go-genproto/proto/alice/protos/api/alicekit/protocol/server"
 	"google.golang.org/protobuf/proto"
@@ -20,7 +19,6 @@ type Frame struct {
 	Prefix []byte
 	Client *client.TClientMessage
 	Server *server.TServerMessage
-	Legacy *speechkit.TSpeechkitMessage
 }
 
 func Decode(data []byte, d Direction) Frame {
@@ -62,10 +60,7 @@ func decodeBare(data []byte, d Direction) Frame {
 			}
 		}
 	}
-	var legacy speechkit.TSpeechkitMessage
-	if proto.Unmarshal(data, &legacy) == nil && legacy.GetHeader().GetName() != "" && legacy.GetPayload().GetTypeUrl() != "" {
-		f.Legacy = &legacy
-	}
+
 	return f
 }
 func eventName(m proto.Message) string {
@@ -92,9 +87,6 @@ func (f Frame) Kind() string {
 		}
 		return "StreamControl"
 	}
-	if f.Legacy != nil {
-		return f.Legacy.GetHeader().GetName()
-	}
 	return "opaque"
 }
 func (f Frame) Marshal() ([]byte, error) {
@@ -113,9 +105,6 @@ func (f Frame) marshalBare() ([]byte, error) {
 	}
 	if f.Server != nil {
 		return proto.Marshal(f.Server)
-	}
-	if f.Legacy != nil {
-		return proto.Marshal(f.Legacy)
 	}
 	return f.Raw, nil
 }

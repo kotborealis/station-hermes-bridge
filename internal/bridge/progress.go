@@ -17,14 +17,16 @@ import (
 	"stationhermes/internal/wire"
 )
 
-// progress starts only after the executor is known. Stop joins the pump so no
-// partial can race with the final answer or continue after cancellation.
+// progress sends one acknowledgement if Hermes has not answered after the threshold.
+// Stop joins the pump so no partial can race with the final answer.
+const progressThreshold = 2 * time.Second
+
 func (n *Native) progress(p *nativeRequest) func() {
 	stop := make(chan struct{})
 	done := make(chan struct{})
 	n.wg.Go(func() {
 		defer close(done)
-		timer := time.NewTimer(n.ProgressAfter)
+		timer := time.NewTimer(progressThreshold)
 		defer timer.Stop()
 		select {
 		case <-stop:
@@ -79,7 +81,7 @@ func (n *Native) beginDeferred(p *nativeRequest) error {
 	r := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(p.applicationID()), ResponseId: new(p.responseID), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{HasVoiceResponse: true, OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new("")}}, Response: &response.TAliceResponseProto_TResponse{IsStreaming: true, Directives: []*directive.TDirective{{Type: "client_action", Name: "tts_play_placeholder"}}}}
 	// Station schedules post-speech listening from this initial stream envelope.
 	// The bridge keeps the microphone open after a conversational response.
-	r.VoiceResponse.ShouldListen = n.ShouldListen && p.listenOnStreamStart
+	r.VoiceResponse.ShouldListen = true
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: r}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
@@ -103,7 +105,7 @@ func (n *Native) deferredPart(p *nativeRequest, text string, last bool) error {
 	base := &deferred.TDeferedAliceResponseProto_TBaseResponse{}
 	voice := text
 	if last {
-		base.ShouldListen = n.ShouldListen
+		base.ShouldListen = true
 	}
 	if text != "" {
 		base.Text = new(text)

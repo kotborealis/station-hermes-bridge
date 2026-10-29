@@ -57,9 +57,6 @@ func main() {
 	voice := stationResolver{hermes: hermes, prompt: cfg.VoicePrompt}
 	p.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 		n := bridge.NewNative(ctx, up, down, voice)
-		n.GateText = false
-		n.ShouldListen = true
-		n.ProgressAfter = 2 * time.Second
 		return n
 	}
 	mux := http.NewServeMux()
