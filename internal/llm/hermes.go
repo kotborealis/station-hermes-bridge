@@ -22,16 +22,32 @@ import (
 
 // HermesClient talks to Hermes Runs, which owns the persistent conversation.
 type HermesClient struct {
-	Model     string
-	BaseURL   string
-	APIKey    string
-	SessionID string
-	HTTP      *http.Client
+	Model   string
+	BaseURL string
+	APIKey  string
+	HTTP    *http.Client
 
-	mu         sync.Mutex
-	approvalMu sync.Mutex
-	pending    *hermesApproval
+	mu            sync.Mutex
+	activeMu      sync.Mutex
+	activeRunID   string
+	runStarting   bool
+	stopRequested bool
+	approvalMu    sync.Mutex
+	pending       *hermesApproval
 }
+
+type HTTPStatusError struct{ StatusCode int }
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("Hermes API returned HTTP %d", e.StatusCode)
+}
+
+var (
+	ErrRunFailed      = errors.New("Hermes run failed")
+	ErrRunInterrupted = errors.New("Hermes run was interrupted")
+	ErrRunUnknown     = errors.New("Hermes run status is unknown")
+	ErrTransport      = errors.New("Hermes API transport failed")
+)
 
 type hermesApproval struct {
 	RunID      string
@@ -60,19 +76,19 @@ type hermesControl struct {
 
 // CompleteVoiceTurn preserves Runs API status as the source of truth while
 // forwarding complete assistant sentences from the resumable events stream.
-func (c *HermesClient) CompleteVoiceTurn(ctx context.Context, messages []Message, onSentence func(string)) (string, error) {
+func (c *HermesClient) CompleteVoiceTurn(ctx context.Context, sessionID string, messages []Message, onSentence func(string)) (string, error) {
 	if c.Model == "" {
 		return "", errors.New("Hermes model is not configured")
 	}
-	return c.completeVoice(ctx, messages, onSentence)
+	return c.completeVoice(ctx, sessionID, messages, onSentence)
 }
 
-func (c *HermesClient) completeVoice(ctx context.Context, messages []Message, onSentence func(string)) (string, error) {
+func (c *HermesClient) completeVoice(ctx context.Context, sessionID string, messages []Message, onSentence func(string)) (string, error) {
 	userText, instructions := lastUserAndInstructions(messages)
 	if userText == "" {
 		return "", errors.New("Hermes request has no user text")
 	}
-	if c.SessionID == "" {
+	if sessionID == "" {
 		return "", errors.New("Hermes session ID is not configured")
 	}
 	c.mu.Lock()
@@ -82,12 +98,22 @@ func (c *HermesClient) completeVoice(ctx context.Context, messages []Message, on
 	var created struct {
 		RunID string `json:"run_id"`
 	}
+	c.activeMu.Lock()
+	c.runStarting = true
+	c.stopRequested = false
+	c.activeMu.Unlock()
+	defer func() {
+		c.activeMu.Lock()
+		c.runStarting = false
+		c.stopRequested = false
+		c.activeMu.Unlock()
+	}()
 	key, err := hermesIdempotencyKey()
 	if err != nil {
 		return "", errors.New("cannot create Hermes request identity")
 	}
 	body := map[string]any{
-		"input": userText, "session_id": c.SessionID,
+		"input": userText, "session_id": sessionID,
 		"instructions": instructions, "model": c.Model,
 	}
 	if err := c.request(ctx, http.MethodPost, "/runs", body, &created, "Idempotency-Key", key); err != nil {
@@ -96,6 +122,33 @@ func (c *HermesClient) completeVoice(ctx context.Context, messages []Message, on
 	if created.RunID == "" {
 		return "", errors.New("Hermes did not return a run ID")
 	}
+	c.activeMu.Lock()
+	c.activeRunID = created.RunID
+	stopRequested := c.stopRequested
+	c.activeMu.Unlock()
+	defer func() {
+		c.activeMu.Lock()
+		if c.activeRunID == created.RunID {
+			c.activeRunID = ""
+		}
+		c.activeMu.Unlock()
+	}()
+	if stopRequested {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		stopErr := c.stopRun(stopCtx, created.RunID)
+		stopCancel()
+		if stopErr != nil {
+			return "", stopErr
+		}
+	}
+	stopRemoteRun := context.AfterFunc(ctx, func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer stopCancel()
+		if err := c.stopRun(stopCtx, created.RunID); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("Hermes run stop request failed", "error", err)
+		}
+	})
+	defer stopRemoteRun()
 	if onSentence != nil {
 		eventCtx, stopEvents := context.WithCancel(ctx)
 		eventsDone := make(chan struct{})
@@ -331,8 +384,12 @@ func (c *HermesClient) waitForRun(ctx context.Context, runID string) (string, er
 			c.pending = &hermesApproval{RunID: runID, RequestID: requestID, Generation: control.ExecutionGeneration, Label: label, Expires: time.Now().Add(60 * time.Second)}
 			c.approvalMu.Unlock()
 			return "Hermes хочет выполнить действие: " + label + ". Скажи «разрешаю» для одного запуска или «отмена».", nil
-		case "failed", "cancelled", "interrupted", "unknown":
-			return "", fmt.Errorf("Hermes run ended with status %s", run.Status)
+		case "failed":
+			return "", ErrRunFailed
+		case "cancelled", "interrupted":
+			return "", ErrRunInterrupted
+		case "unknown":
+			return "", ErrRunUnknown
 		case "", "started", "queued", "running", "stopping":
 		default:
 			return "", errors.New("Hermes returned an unknown run status")
@@ -397,6 +454,33 @@ func (c *HermesClient) HandleVoiceApproval(ctx context.Context, text string) (st
 	return answer, true, nil
 }
 
+func (c *HermesClient) StopActiveRun(ctx context.Context) (bool, error) {
+	c.activeMu.Lock()
+	runID := c.activeRunID
+	if runID == "" && c.runStarting {
+		c.stopRequested = true
+		c.activeMu.Unlock()
+		return true, nil
+	}
+	c.activeMu.Unlock()
+	if runID == "" {
+		return false, nil
+	}
+	if err := c.stopRun(ctx, runID); err != nil {
+		var status *HTTPStatusError
+		if errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusConflict) {
+			return false, nil
+		}
+		return true, err
+	}
+	return true, nil
+}
+
+func (c *HermesClient) stopRun(ctx context.Context, runID string) error {
+	path := "/runs/" + url.PathEscape(runID) + "/stop"
+	return c.request(ctx, http.MethodPost, path, nil, nil)
+}
+
 func (c *HermesClient) replyApproval(ctx context.Context, pending *hermesApproval, choice string) error {
 	path := "/runs/" + url.PathEscape(pending.RunID) + "/approval"
 	body := map[string]any{
@@ -436,11 +520,11 @@ func (c *HermesClient) request(ctx context.Context, method, path string, body an
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		return errors.New("Hermes API transport failed")
+		return ErrTransport
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("Hermes API returned HTTP %d", resp.StatusCode)
+		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 	if out == nil {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<20))

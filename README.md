@@ -11,7 +11,7 @@ Small on-device bridge for rooted Yandex Stations. The station keeps its normal 
 - Current build: about 12.4 MiB; gzip transfer artifact about 4.2 MiB. The installer stages an uncompressed copy and requires at least 14 MiB free on `/data`.
 - Hermes API token is read from a separate file with mode `0600`; do not commit it.
 
-The station's speech recognition and TTS stay on Yandex. Every recognized text request goes to Hermes; there is no classifier or rule that sends ordinary questions back to Alice. Non-text protocol events still pass through to Yandex. Hermes session continuity is provided by the configured stable `session_id`; the session identifier and API token are not logged.
+The station's speech recognition and TTS stay on Yandex. Every recognized text request goes to Hermes; there is no classifier or rule that sends ordinary questions back to Alice. Non-text protocol events still pass through to Yandex. Hermes session continuity uses the configured `session_id`; the active ID is persisted locally after a confirmed voice reset, and neither the ID nor API token is logged.
 
 ## Build
 
@@ -47,11 +47,11 @@ On the station, `station-hermes -check-hermes-tls URL` checks HTTPS trust withou
 
 ## API behavior and approvals
 
-Voice turns use Hermes Runs and one persistent session. If Hermes pauses for an approval, the bridge asks aloud; say “разрешаю” for the pending action once or “отмена”. The decision is single-use and bound to the pending request. The bridge does not enable Hermes unattended approval mode. Hermes server policy still controls which actions can be auto-approved, rejected, or exposed for approval.
+Voice turns use Hermes Runs and one active persistent session. If Hermes pauses for an approval, the bridge asks aloud; say “разрешаю” for the pending action once or “отмена”. The decision is single-use and bound to the pending request. Say “стоп” or “останови ответ” to stop the active Hermes run; Station-side request cancellation also sends Hermes the stop request. To start with a clean context, say “начни новый разговор”, then confirm with “да, начни новый разговор”. The bridge rotates the active session ID and stores it in `<config-path>.session-id` with mode `0600`; the previous transcript remains in Hermes history. The bridge does not enable Hermes unattended approval mode. Hermes server policy still controls which actions can be auto-approved, rejected, or exposed for approval.
 
 This is a voice interface, not an authentication factor. Anyone able to speak to the station can interact with the configured Hermes session. Keep the device on a trusted network and configure Hermes permissions accordingly.
 
-Voice responses use a short-answer instruction. If Hermes has not completed a reply after two seconds, the station says one brief acknowledgement. The bridge subscribes to the Hermes Runs SSE events and can synthesize complete assistant sentences while the run is still active; the final run output remains authoritative, and text already spoken is omitted from the final audio segment. See `docs/VOICE-LATENCY.md` for event handling and fallback behavior.
+Connection, timeout, access-token, rate-limit and run failures receive distinct short spoken messages. Voice responses use a short-answer instruction. If Hermes has not completed a reply after two seconds, the station says one brief acknowledgement. The bridge subscribes to the Hermes Runs SSE events and can synthesize complete assistant sentences while the run is still active; the final run output remains authoritative, and text already spoken is omitted from the final audio segment. See `docs/VOICE-LATENCY.md` for event handling and fallback behavior.
 
 ## Scope
 

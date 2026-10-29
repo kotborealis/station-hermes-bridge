@@ -9,3 +9,6 @@ hermes-api-key
 endpoint-backup.json
 *.bak
 .DS_Store
+
+*.session-id
+config.json.session-id

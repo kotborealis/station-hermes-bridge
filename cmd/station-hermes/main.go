@@ -52,9 +52,15 @@ func main() {
 		os.Exit(2)
 	}
 	apiKey := strings.TrimSpace(string(key))
-	hermes := &llm.HermesClient{Model: cfg.Model, BaseURL: cfg.HermesURL, APIKey: apiKey, SessionID: cfg.SessionID}
+	statePath := *configPath + ".session-id"
+	sessions, err := openSessionStore(statePath, cfg.SessionID)
+	if err != nil {
+		slog.Error("Hermes session state rejected", "error", err)
+		os.Exit(2)
+	}
+	hermes := &llm.HermesClient{Model: cfg.Model, BaseURL: cfg.HermesURL, APIKey: apiKey}
 	p := &bridge.Proxy{Upstream: cfg.Upstream}
-	voice := stationResolver{hermes: hermes, prompt: cfg.VoicePrompt}
+	voice := stationResolver{hermes: hermes, sessions: sessions, prompt: cfg.VoicePrompt, reset: &resetConfirmation{}}
 	p.NewSession = func(ctx context.Context, up, down bridge.Sender) bridge.Session {
 		n := bridge.NewNative(ctx, up, down, voice)
 		return n
