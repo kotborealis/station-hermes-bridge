@@ -27,21 +27,16 @@ import (
 	"stationhermes/internal/wire"
 )
 
-type Resolution struct {
-	Answer string
-}
 type Resolver interface {
-	ResolveStream(context.Context, string, func(string)) (Resolution, error)
+	ResolveStream(context.Context, string, func(string)) (string, error)
 }
 
 type nativeRequest struct {
 	streaming                       bool
-	listenOnStreamStart             bool
 	partial                         uint32
 	responseID                      string
 	final                           bool
 	header                          *header.TEventHeader
-	isText                          bool
 	ttsStarted                      bool
 	gated                           bool
 	input                           []byte
@@ -67,25 +62,21 @@ type nativeRequest struct {
 	expires                         *time.Timer
 }
 type Native struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	up, down      Sender
-	resolver      Resolver
-	mu            sync.Mutex
-	requests      map[string]*nativeRequest
-	tts           map[string]*nativeRequest
-	streams       map[uint32]*nativeRequest
-	blocked       map[uint32]*nativeRequest
-	wg            sync.WaitGroup
-	GateText      bool
-	DecisionDelay time.Duration
-	ShouldListen  bool
-	ProgressAfter time.Duration
+	ctx      context.Context
+	cancel   context.CancelFunc
+	up, down Sender
+	resolver Resolver
+	mu       sync.Mutex
+	requests map[string]*nativeRequest
+	tts      map[string]*nativeRequest
+	streams  map[uint32]*nativeRequest
+	blocked  map[uint32]*nativeRequest
+	wg       sync.WaitGroup
 }
 
 func NewNative(ctx context.Context, up, down Sender, resolver Resolver) *Native {
 	ctx, cancel := context.WithCancel(ctx)
-	return &Native{ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, ShouldListen: true, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
+	return &Native{ctx: ctx, cancel: cancel, up: up, down: down, resolver: resolver, requests: map[string]*nativeRequest{}, tts: map[string]*nativeRequest{}, streams: map[uint32]*nativeRequest{}, blocked: map[uint32]*nativeRequest{}}
 }
 func (n *Native) Close() {
 	n.cancel()
@@ -104,21 +95,7 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		return n.up(ctx, k, data)
 	}
 	e := f.Client.GetEvent()
-	if stat := e.GetRequestStat(); stat != nil {
-		kind := "none"
-		raw := strings.ToLower(stat.GetError())
-		if raw != "" {
-			kind = "other"
-			if strings.Contains(raw, "timeout") || strings.Contains(raw, "timed out") || strings.Contains(raw, "deadline") {
-				kind = "timeout"
-			} else if strings.Contains(raw, "cancel") {
-				kind = "canceled"
-			}
-		}
-		timestamps := stat.GetTimestamps()
-		reported := func(value string) bool { return value != "" && value != "0" }
-		slog.Info("native_playback_status", "request", requestTag(stat.GetRequestMessageId()), "error_class", kind, "playback_reported", reported(timestamps.GetOnSoundPlayerBeginTime()) || reported(timestamps.GetOnPlayerBegin()), "finished_reported", reported(timestamps.GetOnSoundPlayerEndTime()) || reported(timestamps.GetOnPlayerEnd()))
-	}
+
 	var req *request.TAliceRequestProto
 	switch f.Kind() {
 	case "TextInput":
@@ -139,9 +116,8 @@ func (n *Native) Client(ctx context.Context, k websocket.MessageType, data []byt
 		pctx, cancel := context.WithTimeout(n.ctx, 90*time.Second)
 		p := &nativeRequest{id: id, request: proto.Clone(req).(*request.TAliceRequestProto), text: req.GetRequest().GetEvent().GetText(), ctx: pctx, cancel: cancel}
 		p.header = proto.Clone(e.GetHeader()).(*header.TEventHeader)
-		p.isText = f.Kind() == "TextInput"
 		p.input = append([]byte{}, data...)
-		p.gated = !p.isText || n.GateText
+		p.gated = f.Kind() != "TextInput"
 
 		slog.Info("native_request_shape", "request", requestTag(id), "text_bytes", len(p.text), "event_type", req.GetRequest().GetEvent().GetType().String(), "stream", e.GetHeader().GetStreamId(), "unknown_request_bytes", len(req.ProtoReflect().GetUnknown()), "payload_bytes", len(req.GetRequest().GetEvent().GetPayloadRaw()))
 		n.mu.Lock()
@@ -469,23 +445,13 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 	text := p.text
 	n.mu.Unlock()
 	n.wg.Go(func() {
-		if n.DecisionDelay > 0 {
-			select {
-			case <-time.After(n.DecisionDelay):
-			case <-p.ctx.Done():
-				return
-			}
-		}
-		result := Resolution{}
+
+		var answer string
 		useHermes := n.resolver != nil && strings.TrimSpace(text) != ""
 		var err error
 		if useHermes {
-			p.listenOnStreamStart = true
-			stop := func() {}
-			if n.ProgressAfter > 0 {
-				stop = n.progress(p)
-			}
-			result, err = n.resolver.ResolveStream(p.ctx, text, func(sentence string) { n.streamSentence(p, sentence) })
+			stop := n.progress(p)
+			answer, err = n.resolver.ResolveStream(p.ctx, text, func(sentence string) { n.streamSentence(p, sentence) })
 			stop()
 		}
 
@@ -498,7 +464,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 		}
 		if err != nil {
 			slog.Warn("native_hermes_request_failed", "request", requestTag(p.id), "error", err)
-			result.Answer = "Сейчас не получилось получить ответ Hermes."
+			answer = "Сейчас не получилось получить ответ Hermes."
 		}
 		n.mu.Lock()
 		if p.canceled {
@@ -538,7 +504,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				return
 			}
 		}
-		if err := n.reply(p, result.Answer); err != nil {
+		if err := n.reply(p, answer); err != nil {
 			slog.Warn("native_reply_failed", "request", requestTag(p.id))
 		}
 	})
@@ -560,7 +526,7 @@ func (n *Native) reply(p *nativeRequest, text string) error {
 		requestID = p.id
 	}
 	answer := &response.TAliceResponseProto{Header: &response.TAliceResponseProto_THeader{RequestId: new(requestID), ResponseId: new(newID()), DialogId: new(p.request.GetHeader().GetDialogId()), SequenceNumber: new(p.request.GetHeader().GetSequenceNumber())}, VoiceResponse: &response.TAliceResponseProto_TVoiceResponse{OutputSpeech: &response.TAliceResponseProto_TVoiceResponse_TOutputSpeech{Text: new(text)}, HasVoiceResponse: true}, Response: &response.TAliceResponseProto_TResponse{Cards: []*response.TAliceResponseProto_TResponse_TCard{{Type: "simple_text", Text: new(text), CardId: new(newID())}}}}
-	answer.VoiceResponse.ShouldListen = n.ShouldListen
+	answer.VoiceResponse.ShouldListen = true
 	m := &server.TServerMessage{Message: &server.TServerMessage_Event{Event: &server.TServerMessage_TEvent{Header: &header.TEventHeader{MessageId: newID(), RefMessageId: p.id}, Event: &server.TServerMessage_TEvent_AliceResponse{AliceResponse: answer}}}}
 	b, err := (wire.Frame{Server: m, Prefix: []byte("AAPI")}).Marshal()
 	if err != nil {
@@ -672,15 +638,6 @@ func (n *Native) ack(p *nativeRequest) error {
 		return err
 	}
 	return n.down(p.ctx, websocket.MessageBinary, b)
-}
-
-func canReplaceResponse(r *response.TAliceResponseProto) bool {
-	for _, d := range r.GetResponse().GetDirectives() {
-		if d.GetType() != "client_action" || d.GetName() != "tts_play_placeholder" {
-			return false
-		}
-	}
-	return true
 }
 
 func (n *Native) discardStale(p *nativeRequest) {
