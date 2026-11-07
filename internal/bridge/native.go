@@ -447,7 +447,8 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 	n.wg.Go(func() {
 
 		var answer string
-		useHermes := n.resolver != nil && strings.TrimSpace(text) != ""
+		aliceRoute := aliceIntent(text)
+		useHermes := n.resolver != nil && strings.TrimSpace(text) != "" && aliceRoute == ""
 		var err error
 		if useHermes {
 			stop := n.progress(p)
@@ -489,7 +490,11 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 				}
 			}
 			n.mu.Unlock()
-			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "sent", err == nil)
+			reason := "no_hermes_request"
+			if aliceRoute != "" {
+				reason = "builtin_" + aliceRoute
+			}
+			slog.Info("native_route", "request", requestTag(p.id), "route", "yandex", "reason", reason, "sent", err == nil)
 			return
 		}
 		p.local = true
@@ -498,7 +503,7 @@ func (n *Native) maybeResolve(p *nativeRequest) {
 			n.tts[p.ttsID] = p
 		}
 		n.mu.Unlock()
-		slog.Info("native_route", "request", requestTag(p.id), "route", "hermes")
+		slog.Info("native_route", "request", requestTag(p.id), "route", "hermes", "reason", "default")
 		if p.gated && !p.streaming {
 			if err := n.sendCancel(p.ctx, p.id); err != nil {
 				return

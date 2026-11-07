@@ -1,6 +1,6 @@
 # Rooted Yandex Station deployment checklist
 
-On a rooted Yandex Station with a compatible UniWS endpoint and ARM64 Linux userspace, this deployment sends every recognized text request to Hermes. Yandex continues to provide wake-word handling, ASR, TTS and the low-level UniWS connection. Firmware paths and service ordering vary by model; this checklist is verified on Mini 2, so adapt those steps to the target firmware.
+On a rooted Yandex Station with a compatible UniWS endpoint and ARM64 Linux userspace, built-in command forms are sent through to Alice and other recognized text requests go to Hermes. Yandex continues to provide wake-word handling, ASR, TTS and the low-level UniWS connection. Firmware paths and service ordering vary by model; this checklist is verified on Mini 2, so adapt those steps to the target firmware.
 
 1. Check `/data` free space (at least 14 MiB for a staged binary replacement) and save the current `/system/vendor/quasar/quasar.cfg` off-device. Keep the endpoint backup under `/data/opt/station-hermes/` as a second rollback copy.
 2. Copy the compressed build, `packaging/install-device.sh`, and `config.example.json` to one directory on the station, then run `sh install-device.sh station-hermes-arm64.gz` there. The uncompressed binary is about 12 MiB; the script requires at least 14 MiB free on `/data`, stages the binary before replacing it, and does not install the boot hook or change the firmware endpoint.

@@ -11,7 +11,7 @@ Small on-device bridge for rooted Yandex Stations. The station keeps its normal 
 - Current build: about 12.4 MiB; gzip transfer artifact about 4.2 MiB. The installer stages an uncompressed copy and requires at least 14 MiB free on `/data`.
 - Hermes API token is read from a separate file with mode `0600`; do not commit it.
 
-The station's speech recognition and TTS stay on Yandex. Every recognized text request goes to Hermes; there is no classifier or rule that sends ordinary questions back to Alice. Non-text protocol events still pass through to Yandex. Hermes session continuity uses the configured `session_id`; the active ID is persisted locally after a confirmed voice reset, and neither the ID nor API token is logged.
+The station's wake-word detection, speech recognition and TTS stay on Yandex. Recognized built-in commands for timers, alarms, reminders, weather, time/date, calculations, media and common smart-home controls continue through Alice; other recognized text requests go to Hermes. Non-text protocol events still pass through to Yandex. Hermes session continuity uses the configured `session_id`; the active ID is persisted locally after a confirmed voice reset, and neither the ID nor API token is logged.
 
 ## Build
 
@@ -53,9 +53,9 @@ This is a voice interface, not an authentication factor. Anyone able to speak to
 
 Connection, timeout, access-token, rate-limit and run failures receive distinct short spoken messages. Voice responses use a short-answer instruction. If Hermes has not completed a reply after two seconds, the station says one brief acknowledgement. The bridge subscribes to the Hermes Runs SSE events and can synthesize complete assistant sentences while the run is still active; the final run output remains authoritative, and text already spoken is omitted from the final audio segment. See `docs/VOICE-LATENCY.md` for event handling and fallback behavior.
 
-## Scope
+## Request routing
 
-All recognized assistant requests go directly to Hermes. The station continues to provide wake-word detection, ASR, TTS and the low-level UniWS protocol.
+UniWS provides the recognized text before Alice's cloud NLU runs, without an intent label. The bridge therefore routes a small set of clear built-in command forms to Alice: timers, alarms, reminders, weather, time/date, calculations, media controls and common smart-home device actions. Alice then handles those requests through its normal NLU and capabilities. Other text requests go to Hermes. The matching rules and examples live in `internal/bridge/alice_intent.go`.
 
 ## License
 
