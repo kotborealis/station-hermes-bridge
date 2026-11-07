@@ -10,6 +10,8 @@ The station audio protocol keeps the stream open between synthesized segments. T
 
 ## Voice controls
 
+Recognized built-in commands for timers, alarms, reminders, weather, time/date, calculations, media and common smart-home controls continue to Alice. The bridge matches these command forms in the ASR text because UniWS does not expose Alice's cloud-NLU intent label before `ContinueRequest`. Other requests continue to Hermes.
+
 “Стоп”, “останови ответ” and “хватит” call Hermes `POST /v1/runs/{run_id}/stop`. A Station cancellation event does the same. The local poll then finishes when Hermes reports the run as cancelled.
 
 “Начни новый разговор” asks for confirmation. On “да, начни новый разговор”, the bridge atomically stores a new active session ID beside the config and uses it for later Runs, including after a service restart. This keeps the prior transcript in Hermes history but excludes it from the new conversation.
