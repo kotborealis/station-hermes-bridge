@@ -8,6 +8,8 @@ The SSE reader is best-effort. An unavailable or unsupported events endpoint doe
 
 The station audio protocol keeps the stream open between synthesized segments. The bridge waits for each streamed sentence's TTS segment to close before accepting the next one, then sends any remaining final text and closes the stream. If all final text was already spoken, it closes the existing stream without generating an empty TTS request.
 
+Hermes replies end the listening turn after playback. The response does not request another post-speech listening cycle.
+
 ## Voice controls
 
 Recognized built-in commands for timers, alarms, reminders, weather, time/date, calculations, media and common smart-home controls continue to Alice. The bridge matches these command forms in the ASR text because UniWS does not expose Alice's cloud-NLU intent label before `ContinueRequest`. Other requests continue to Hermes.
